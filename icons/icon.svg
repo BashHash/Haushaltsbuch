@@ -1,0 +1,48 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <rect width="512" height="512" rx="112" fill="#2563EB"/>
+
+  <!-- Karte -->
+  <rect x="80" y="96" width="352" height="320" rx="40" fill="#FFFFFF"/>
+
+  <!-- Kopfbereich -->
+  <rect x="112" y="128" width="120" height="24" rx="12" fill="#DBEAFE"/>
+
+  <!-- Diagramm -->
+  <rect x="130" y="290" width="40" height="70" rx="8" fill="#60A5FA"/>
+  <rect x="190" y="240" width="40" height="120" rx="8" fill="#3B82F6"/>
+  <rect x="250" y="200" width="40" height="160" rx="8" fill="#2563EB"/>
+  <rect x="310" y="165" width="40" height="195" rx="8" fill="#1D4ED8"/>
+
+  <!-- Kreissymbol -->
+  <circle cx="340" cy="170" r="55" fill="#10B981"/>
+
+  <!-- Euro -->
+  <path
+    d="M353 143
+       C347 137 338 134 328 134
+       C311 134 297 145 293 162
+       H284
+       V171
+       H291
+       C295 188 308 199 328 199
+       C339 199 348 195 355 188
+       L347 179
+       C342 184 336 187 329 187
+       C318 187 309 181 305 171
+       H338
+       V162
+       H303
+       C307 151 316 146 328 146
+       C335 146 341 148 347 154 Z"
+    fill="#FFFFFF"/>
+
+  <!-- Kontrollhaken -->
+  <circle cx="392" cy="384" r="36" fill="#10B981"/>
+  <path
+    d="M377 385 L389 397 L409 374"
+    fill="none"
+    stroke="#FFFFFF"
+    stroke-width="10"
+    stroke-linecap="round"
+    stroke-linejoin="round"/>
+</svg>
