@@ -1454,7 +1454,8 @@ def main():
     app.setApplicationName(APP_TITLE)
     app.setStyle(QStyleFactory.create("Fusion"))
     app.setWindowIcon(QIcon(
-        "C:/Users/awind/OneDrive/Dokumente/GitHub/Haushaltsbuch/icons/icon.svg"))
+        "C:/Users/awind/OneDrive/Dokumente/GitHub/\
+            Haushaltsbuch/icons/icon.svg"))
     QGuiApplication.styleHints().setColorScheme(Qt.ColorScheme.Light)
     w = MainWindow()
     w.show()
