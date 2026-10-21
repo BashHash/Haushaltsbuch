@@ -1404,7 +1404,21 @@ class MainWindow(QMainWindow):
     def show_info(self):
         QMessageBox.information(
             self, "Info",
-            f"Haushaltsbuch\nVersion: {VERSION}\nEntwickler: {DEVELOPER}")
+            f"""Haushaltsbuch
+Version: {VERSION}
+Copyright (C) 2026 {DEVELOPER}
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License version 3 of the
+License.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with this program.  If not, see <https://www.gnu.org/licenses/>.""")
 
     def show_modules(self):
         lines = ["Genutzte Module:", ""]
@@ -1454,8 +1468,7 @@ def main():
     app.setApplicationName(APP_TITLE)
     app.setStyle(QStyleFactory.create("Fusion"))
     app.setWindowIcon(QIcon(
-        "C:/Users/awind/OneDrive/Dokumente/GitHub/\
-            Haushaltsbuch/icons/icon.svg"))
+        "C:/Users/awind/OneDrive/Dokumente/GitHub/Haushaltsbuch/icons/icon.svg"))
     QGuiApplication.styleHints().setColorScheme(Qt.ColorScheme.Light)
     w = MainWindow()
     w.show()
