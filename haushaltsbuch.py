@@ -1153,7 +1153,7 @@ class OverviewTab(QWidget):
 
         rows.append(["Summe aller Konten", "", money(total), ""])
         self.table.setModel(SimpleTableModel(["Konto",
-                                              f"Anfangsstand ({year})",
+                                              "Anfangsstand",
                                               "Endstand",
                                               "Differenz"], rows))
         self.clear_chart("Kontenübersicht")
