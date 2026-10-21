@@ -1,16 +1,6 @@
 # Haushaltsbuch mit PySide6
 
-## Installation
-
-```bash
-python -m venv .venv
-# Windows:
-.venv\Scripts\activate
-# macOS/Linux:
-source .venv/bin/activate
-pip install -r requirements.txt
-python haushaltsbuch.py
-```
+Ein simples Haushaltsbuch mit Kategorien, mehreren Konten, Diagrammen, Pivot-Tabellen mit Filtern
 
 ## Bedienhinweise
 
@@ -22,6 +12,7 @@ python haushaltsbuch.py
 - CSV/TXT-Import erwartet die Spalten: `Datum`, `Kategorie`, `Beschreibung`, `PayPal`, `Regelmäßig`, `Konto`, `Betrag`.
 - Das Datum wird als `YYYY-MM-DD` importiert/exportiert.
 - Buchungen mit Beschreibung `Umbuchung` werden in den Ein-/Ausgangsdiagrammen ausgeschlossen.
+- Export als Excel, CSV- oder TXT-Datei möglich
 
 ## Datenmodell
 
