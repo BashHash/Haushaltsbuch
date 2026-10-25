@@ -38,7 +38,7 @@ try:
 except ImportError:
     EXCEL_AVAILABLE = False
 
-VERSION = "1.0"
+VERSION = "1.1.0"
 DEVELOPER = "Andreas Windmüller\nawindi@gmx.de"
 APP_TITLE = "Haushaltsbuch - V" + VERSION
 DATE_FMT = "%d.%m.%Y"
@@ -475,7 +475,28 @@ class EntryTab(QWidget):
             form.addLayout(cell)
         root.addWidget(box)
 
-        self.proxy = BookingSortProxy()
+        # --- Filter (Jahr, Monat, Konto) ---
+        filter_box = QGroupBox("Filter")
+        filter_layout = QHBoxLayout(filter_box)
+        self.year_filter = QComboBox()
+        self.month_filter = QComboBox()
+        self.account_filter = QComboBox()
+        self.month_filter.addItem("Alle Monate", 0)
+        for i, n in enumerate(["Januar", "Februar", "März", "April", "Mai",
+                               "Juni", "Juli", "August", "September",
+                               "Oktober", "November", "Dezember"], 1):
+            self.month_filter.addItem(n, i)
+        for label, w in [("Jahr", self.year_filter),
+                         ("Monat", self.month_filter),
+                         ("Konto", self.account_filter)]:
+            cell = QVBoxLayout()
+            cell.addWidget(QLabel(label))
+            cell.addWidget(w)
+            filter_layout.addLayout(cell)
+        filter_layout.addStretch()
+        root.addWidget(filter_box)
+
+        self.proxy = MultiFilterProxy()
         self.proxy.setSourceModel(model)
         self.table = QTableView()
         self.table.setModel(self.proxy)
@@ -493,11 +514,23 @@ class EntryTab(QWidget):
         row.addStretch()
         root.addLayout(row)
 
+        # --- Kontostände ---
+        balance_box = QGroupBox("Kontostände")
+        balance_layout = QVBoxLayout(balance_box)
+        self.balance_table = QTableView()
+        self.balance_table.horizontalHeader().setSectionResizeMode(
+            QHeaderView.Stretch)
+        balance_layout.addWidget(self.balance_table)
+        root.addWidget(balance_box)
+
         self.add_btn.clicked.connect(self.add)
         self.amount.lineEdit().returnPressed.connect(self.add)
         edit.clicked.connect(self.edit)
         delete.clicked.connect(self.delete)
         self.table.doubleClicked.connect(lambda _=None: self.edit())
+
+        for w in (self.year_filter, self.month_filter, self.account_filter):
+            w.currentIndexChanged.connect(self.apply_filters)
         self.refresh_settings()
 
     def refresh_settings(self):
@@ -513,6 +546,73 @@ class EntryTab(QWidget):
         if acc:
             self.account.setCurrentText(acc)
 
+        # Refresh filter combos
+        years = sorted({int(x.datum[:4]) for x in self.store.bookings
+                        if len(x.datum) >= 4}, reverse=True)
+        self.year_filter.blockSignals(True)
+        self.year_filter.clear()
+        self.year_filter.addItem("Alle Jahre", 0)
+        for y in years:
+            self.year_filter.addItem(str(y), y)
+        self.year_filter.blockSignals(False)
+
+        acc_filter = self.account_filter.currentData()
+        self.account_filter.blockSignals(True)
+        self.account_filter.clear()
+        self.account_filter.addItem("Alle Konten", "")
+        for a in self.store.accounts:
+            self.account_filter.addItem(a["name"], a["name"])
+        self.account_filter.blockSignals(False)
+        if acc_filter is not None:
+            idx = self.account_filter.findData(acc_filter)
+            if idx >= 0:
+                self.account_filter.setCurrentIndex(idx)
+
+        self.apply_filters()
+
+    def apply_filters(self):
+        year = self.year_filter.currentData() or 0
+        month = self.month_filter.currentData() or 0
+        account = self.account_filter.currentData() or ""
+        self.proxy.set_filters(year, month, "", account, "")
+        self._refresh_balances()
+
+    def _refresh_balances(self):
+        year = self.year_filter.currentData() or 0
+        month = self.month_filter.currentData() or 0
+        account_filter = self.account_filter.currentData() or ""
+        rows = []
+        total = 0.0
+        for a in self.store.accounts:
+            name = a["name"]
+            if account_filter and name != account_filter:
+                continue
+            start = float(a.get("opening_balance", 0))
+            s = 0.0
+            for b in self.store.bookings:
+                if b.konto != name:
+                    continue
+                if year:
+                    try:
+                        by = int(b.datum[:4])
+                    except (ValueError, TypeError):
+                        continue
+                    if by > year:
+                        continue
+                    if by == year and month:
+                        try:
+                            bm = int(b.datum[5:7])
+                        except (ValueError, TypeError):
+                            continue
+                        if bm > month:
+                            continue
+                s += b.betrag
+            end = start + s
+            total += end
+            rows.append([name, money(end)])
+        self.balance_table.setModel(SimpleTableModel(
+            ["Konto", "Kontostand"], rows))
+
     def add(self):
         if not self.category.currentText() or not self.account.currentText():
             return
@@ -526,6 +626,7 @@ class EntryTab(QWidget):
                     self.amount.value())
         self.store.bookings.append(b)
         self.model.refresh()
+        self._refresh_balances()
         self.amount.setValue(0)
         self.description.setCurrentText("")
         self.paypal.setChecked(False)
@@ -550,6 +651,7 @@ class EntryTab(QWidget):
         if dlg.exec():
             self.store.bookings[row] = dlg.result_booking()
             self.model.refresh()
+            self._refresh_balances()
             self.changed.emit()
 
     def delete(self):
@@ -573,6 +675,7 @@ class EntryTab(QWidget):
             del self.store.bookings[row]
 
         self.model.refresh()
+        self._refresh_balances()
         self.changed.emit()
 
 
