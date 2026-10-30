@@ -654,11 +654,11 @@ class EntryTab(QWidget):
                     self.account.currentText(),
                     self.amount.value())
         row = len(self.store.bookings)
-        self.table.setUpdatesEnabled(False)
+        # self.table.setUpdatesEnabled(False)
         self.model.beginInsertRows(QModelIndex(), row, row)
         self.store.bookings.append(b)
         self.model.endInsertRows()
-        self.table.setUpdatesEnabled(True)
+        # self.table.setUpdatesEnabled(True)
         self._refresh_balances()
         self.amount.setValue(0)
         self.description.setCurrentText("")
