@@ -39,7 +39,7 @@ try:
 except ImportError:
     EXCEL_AVAILABLE = False
 
-VERSION = "1.1.0"
+VERSION = "1.2.0"
 DEVELOPER = "Andreas Windmüller\nawindi@gmx.de"
 APP_TITLE = "Haushaltsbuch - V" + VERSION
 DATE_FMT = "%d.%m.%Y"
