@@ -294,23 +294,44 @@ class BookingModel(QAbstractTableModel):
         if not index.isValid():
             return None
         b = self.store.bookings[index.row()]
-        values = [b.datum, b.kategorie, b.beschreibung, b.paypal,
-                  b.regelmaessig, b.konto, b.betrag]
-        v = values[index.column()]
+        col = index.column()
         if role == Qt.DisplayRole:
-            if index.column() in (3, 4):
-                return "Ja" if v else "Nein"
-            if index.column() == 6:
-                return money(float(v))
-            if index.column() == 0:
-                return format_date_german(v)
-            return str(v)
+            if col == 0:
+                return format_date_german(b.datum)
+            if col == 1:
+                return str(b.kategorie)
+            if col == 2:
+                return str(b.beschreibung)
+            if col == 3:
+                return "Ja" if b.paypal else "Nein"
+            if col == 4:
+                return "Ja" if b.regelmaessig else "Nein"
+            if col == 5:
+                return str(b.konto)
+            if col == 6:
+                return money(float(b.betrag))
+            return None
         if role == Qt.UserRole:
-            return v
-        if role == Qt.TextAlignmentRole and index.column() == 6:
+            if col == 0:
+                return b.datum
+            if col == 1:
+                return b.kategorie
+            if col == 2:
+                return b.beschreibung
+            if col == 3:
+                return b.paypal
+            if col == 4:
+                return b.regelmaessig
+            if col == 5:
+                return b.konto
+            if col == 6:
+                return b.betrag
+            return None
+        if role == Qt.TextAlignmentRole and col == 6:
             return int(Qt.AlignRight | Qt.AlignVCenter)
-        if role == Qt.ForegroundRole and index.column() == 6:
-            return QColor("#0b7a38") if float(v) >= 0 else QColor("#b42318")
+        if role == Qt.ForegroundRole and col == 6:
+            return QColor("#0b7a38") if float(b.betrag) >= 0 \
+                else QColor("#b42318")
         return None
 
     def refresh(self):
@@ -320,10 +341,13 @@ class BookingModel(QAbstractTableModel):
 
 def format_date_german(iso_date: str) -> str:
     """Convert ISO date string (yyyy-MM-dd) to German format (dd.MM.yyyy)."""
-    try:
-        return datetime.strptime(str(iso_date), "%Y-%m-%d").strftime(DATE_FMT)
-    except (ValueError, TypeError):
-        return str(iso_date)
+    if len(iso_date) >= 10:
+        return f"{iso_date[8:10]}.{iso_date[5:7]}.{iso_date[:4]}"
+    return iso_date
+    # try:
+    #     return datetime.strptime(str(iso_date), "%Y-%m-%d").strftime(DATE_FMT)
+    # except (ValueError, TypeError):
+    #     return str(iso_date)
 
 
 class BookingSortProxy(QSortFilterProxyModel):
@@ -592,6 +616,10 @@ class EntryTab(QWidget):
         year = self.year_filter.currentData() or 0
         month = self.month_filter.currentData() or 0
         account_filter = self.account_filter.currentData() or ""
+        by_account = defaultdict(list)
+        for b in self.store.bookings:
+            by_account[b.konto].append(b)
+
         rows = []
         total = 0.0
         for a in self.store.accounts:
@@ -600,21 +628,13 @@ class EntryTab(QWidget):
                 continue
             start = float(a.get("opening_balance", 0))
             s = 0.0
-            for b in self.store.bookings:
-                if b.konto != name:
-                    continue
+            for b in by_account.get(name, ()):
                 if year:
-                    try:
-                        by = b.date_parts[0]
-                    except (ValueError, TypeError):
-                        continue
+                    by = b.date_parts[0]
                     if by > year:
                         continue
                     if by == year and month:
-                        try:
-                            bm = b.date_parts[1]
-                        except (ValueError, TypeError):
-                            continue
+                        bm = b.date_parts[1]
                         if bm > month:
                             continue
                 s += b.betrag
@@ -622,8 +642,8 @@ class EntryTab(QWidget):
             total += end
             rows.append([name, money(start), money(end)])
         rows.append(["Summe", "", money(total)])
-        self.balance_table.setModel(SimpleTableModel(
-            ["Konto", "Anfangsstand", "Kontostand"], rows))
+        set_simple_model(self.balance_table,
+                         ["Konto", "Anfangsstand", "Kontostand"], rows)
 
     def add(self):
         if not self.category.currentText() or not self.account.currentText():
@@ -676,10 +696,8 @@ class EntryTab(QWidget):
         if not indexes:
             return
 
-        rows = sorted(
-            [self.proxy.mapToSource(idx).row() for idx in indexes],
-            reverse=True
-            )
+        rows = sorted({self.proxy.mapToSource(idx).row()
+                      for idx in indexes})
 
         if QMessageBox.question(self,
                                 "Löschen",
@@ -687,8 +705,10 @@ class EntryTab(QWidget):
                                 ) != QMessageBox.Yes:
             return
 
-        for row in rows:
-            del self.store.bookings[row]
+        to_delete = set(rows)
+        self.store.bookings = [b for i, b in
+                               enumerate(self.store.bookings)
+                               if i not in to_delete]
 
         self.model.refresh()
         self._refresh_balances()
@@ -788,16 +808,22 @@ class PivotTab(QWidget):
                 float(self.proxy.index(r, 6).data(Qt.UserRole))
         rows = [[k, money(v)] for k, v in sorted(sums.items())]
         rows.append(["Gesamtsumme", money(sum(sums.values()))])
-        self.summary.setModel(SimpleTableModel(["Kategorie", "Zwischensumme"],
-                                               rows))
+        set_simple_model(self.summary, ["Kategorie", "Zwischensumme"], rows)
         self.summary.horizontalHeader().setSectionResizeMode(
             QHeaderView.Stretch)
 
 
 class SimpleTableModel(QAbstractTableModel):
-    def __init__(self, headers, rows):
+    def __init__(self, headers=None, rows=None):
         super().__init__()
-        self.headers, self.rows = headers, rows
+        self.headers = headers if headers is not None else []
+        self.rows = rows if rows is not None else []
+
+    def set_data(self, headers, rows):
+        self.beginResetModel()
+        self.headers = headers
+        self.rows = rows
+        self.endResetModel()
 
     def rowCount(self, p=QModelIndex()):
         return len(self.rows)
@@ -806,12 +832,28 @@ class SimpleTableModel(QAbstractTableModel):
         return len(self.headers)
 
     def data(self, i, role=Qt.DisplayRole):
-        return self.rows[i.row()][i.column()] if i.isValid() and \
-            role == Qt.DisplayRole else None
+        if not i.isValid() or role != Qt.DisplayRole:
+            return None
+        r, c = i.row(), i.column()
+        if r >= len(self.rows) or c >= len(self.headers):
+            return None
+        row = self.rows[r]
+        if c >= len(row):
+            return None
+        return row[c]
 
     def headerData(self, s, o, role=Qt.DisplayRole):
-        return self.headers[s] if role == Qt.DisplayRole and \
-            o == Qt.Horizontal else None
+        if role == Qt.DisplayRole and o == Qt.Horizontal and \
+                s < len(self.headers):
+            return self.headers[s]
+        return None
+
+def set_simple_model(table, headers, rows):
+    model = table.model()
+    if isinstance(model, SimpleTableModel):
+        model.set_data(headers, rows)
+    else:
+        table.setModel(SimpleTableModel(headers, rows))
 
 
 class SettingsTab(QWidget):
@@ -1068,8 +1110,8 @@ class OverviewTab(QWidget):
         rows.append(["Gesamt", money(sum(income_vals)),
                      money(sum(expense_vals)),
                      money(sum(income_vals) - sum(expense_vals))])
-        self.table.setModel(SimpleTableModel(["Monat", "Eingänge",
-                                              "Ausgänge", "Saldo"], rows))
+        set_simple_model(self.table, ["Monat", "Eingänge",
+                                      "Ausgänge", "Saldo"], rows)
 
         if not CHARTS_AVAILABLE:
             return
@@ -1151,9 +1193,10 @@ class OverviewTab(QWidget):
                      money(sum(reg_income_vals) + sum(reg_expense_vals)),
                      money(sum(irr_income_vals)), money(sum(irr_expense_vals)),
                      money(sum(irr_income_vals) + sum(irr_expense_vals))])
-        self.table.setModel(SimpleTableModel(
-            ["Monat", "Reg. Einnahmen", "Reg. Ausgaben", "Reg. Summe",
-             "Unreg. Einnahmen", "Unreg. Ausgaben", "Unreg. Summe"], rows))
+        set_simple_model(self.table,
+                         ["Monat", "Reg. Einnahmen", "Reg. Ausgaben", "Reg. Summe",
+                          "Unreg. Einnahmen", "Unreg. Ausgaben", "Unreg. Summe"],
+                         rows)
 
         if not CHARTS_AVAILABLE:
             return
@@ -1227,7 +1270,7 @@ class OverviewTab(QWidget):
 
         # Table data
         rows = [[f"{m:02d}/{year}", money(vals[m-1])] for m in range(1, 13)]
-        self.table.setModel(SimpleTableModel(["Monat", "Kontostand"], rows))
+        set_simple_model(self.table, ["Monat", "Kontostand"], rows)
 
         if not CHARTS_AVAILABLE:
             return
@@ -1271,10 +1314,10 @@ class OverviewTab(QWidget):
             rows.append([a["name"], money(start), money(end), money(diff)])
 
         rows.append(["Summe aller Konten", "", money(total), ""])
-        self.table.setModel(SimpleTableModel(["Konto",
-                                              "Anfangsstand",
-                                              "Endstand",
-                                              "Differenz"], rows))
+        set_simple_model(self.table, ["Konto",
+                                     "Anfangsstand",
+                                     "Endstand",
+                                     "Differenz"], rows)
         self.clear_chart("Kontenübersicht")
 
     def clear_chart(self, title):
