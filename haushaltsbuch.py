@@ -9,6 +9,7 @@ import uuid
 from datetime import datetime as dt_datetime
 from collections import defaultdict
 from dataclasses import dataclass, asdict
+from functools import cached_property
 from datetime import date, datetime
 from pathlib import Path
 
@@ -66,6 +67,14 @@ class Booking:
     regelmaessig: bool
     konto: str
     betrag: float
+
+    @cached_property
+    def date_parts(self):
+        s = self.datum or ""
+        try:
+            return (int(s[:4]), int(s[5:7]), int(s[8:10]) if len(s) >= 10 else 0)
+        except (ValueError, TypeError):
+            return (0, 0, 0)
 
 
 class Store:
@@ -331,10 +340,9 @@ class BookingSortProxy(QSortFilterProxyModel):
         lv = left.data(Qt.UserRole)
         rv = right.data(Qt.UserRole)
         if left.column() == 0:
+            # ISO dates (yyyy-MM-dd) compare correctly as strings
             try:
-                # UserRole stores ISO format (yyyy-MM-dd)
-                return datetime.strptime(lv, "%Y-%m-%d") \
-                    < datetime.strptime(rv, "%Y-%m-%d")
+                return str(lv) < str(rv)
             except Exception:
                 pass
         if left.column() == 6:
@@ -364,14 +372,17 @@ class MultiFilterProxy(BookingSortProxy):
             return m.index(row, col, parent).data(Qt.UserRole)
         m = self.sourceModel()
         # get = lambda col: m.index(row, col, parent).data(Qt.UserRole)
+        s = str(get(0))
+        if len(s) < 7:
+            return False
         try:
-            # UserRole stores ISO format (yyyy-MM-dd)
-            d = datetime.strptime(str(get(0)), "%Y-%m-%d")
-        except ValueError:
+            y = int(s[:4])
+            mo = int(s[5:7])
+        except (ValueError, TypeError):
             return False
         return (
-            (not self.year or d.year == self.year)
-            and (not self.month or d.month == self.month)
+            (not self.year or y == self.year)
+            and (not self.month or mo == self.month)
             and (not self.category or get(1) == self.category)
             and (not self.account or get(5) == self.account)
             and (not self.description or self.description in
@@ -547,7 +558,7 @@ class EntryTab(QWidget):
             self.account.setCurrentText(acc)
 
         # Refresh filter combos
-        years = sorted({int(x.datum[:4]) for x in self.store.bookings
+        years = sorted({x.date_parts[0] for x in self.store.bookings
                         if len(x.datum) >= 4}, reverse=True)
         self.year_filter.blockSignals(True)
         self.year_filter.clear()
@@ -594,14 +605,14 @@ class EntryTab(QWidget):
                     continue
                 if year:
                     try:
-                        by = int(b.datum[:4])
+                        by = b.date_parts[0]
                     except (ValueError, TypeError):
                         continue
                     if by > year:
                         continue
                     if by == year and month:
                         try:
-                            bm = int(b.datum[5:7])
+                            bm = b.date_parts[1]
                         except (ValueError, TypeError):
                             continue
                         if bm > month:
@@ -745,7 +756,7 @@ class PivotTab(QWidget):
         self.apply()
 
     def refresh_settings(self):
-        years = sorted({int(x.datum[:4]) for x in self.store.bookings
+        years = sorted({x.date_parts[0] for x in self.store.bookings
                         if len(x.datum) >= 4}, reverse=True)
         self.year.blockSignals(True)
         self.year.clear()
@@ -1020,7 +1031,7 @@ class OverviewTab(QWidget):
         # Filter out "Umbuchung" entries
         relevant = [b for b in self.store.bookings if
                     b.beschreibung.strip().lower() != "umbuchung" and
-                    int(b.datum[:4]) == y]
+                    b.date_parts[0] == y]
 
         if idx == 0:
             self._show_monthly_income_expenses(relevant, y)
@@ -1038,7 +1049,7 @@ class OverviewTab(QWidget):
         expenses = defaultdict(float)
 
         for b in bookings:
-            month = int(b.datum[5:7])
+            month = b.date_parts[1]
             if b.betrag >= 0:
                 income[month] += b.betrag
             else:
@@ -1107,7 +1118,7 @@ class OverviewTab(QWidget):
         irr_expense = defaultdict(float)
 
         for b in bookings:
-            month = int(b.datum[5:7])
+            month = b.date_parts[1]
             if b.regelmaessig:
                 if b.betrag >= 0:
                     reg_income[month] += b.betrag
@@ -1203,7 +1214,7 @@ class OverviewTab(QWidget):
         # Aggregate bookings by month
         monthly_changes = defaultdict(float)
         for b in bookings:
-            month = int(b.datum[5:7])
+            month = b.date_parts[1]
             monthly_changes[month] += b.betrag
 
         # Calculate running balance per month
@@ -1254,7 +1265,7 @@ class OverviewTab(QWidget):
             start = float(a.get("opening_balance", 0))
             end = start + sum(b.betrag for b in self.store.bookings if
                               b.konto == a["name"] and
-                              int(b.datum[:4]) <= year)
+                              b.date_parts[0] <= year)
             diff = end-start
             total += end
             rows.append([a["name"], money(start), money(end), money(diff)])
