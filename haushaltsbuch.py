@@ -609,9 +609,10 @@ class EntryTab(QWidget):
                 s += b.betrag
             end = start + s
             total += end
-            rows.append([name, money(end)])
+            rows.append([name, money(start), money(end)])
+        rows.append(["Summe", "", money(total)])
         self.balance_table.setModel(SimpleTableModel(
-            ["Konto", "Kontostand"], rows))
+            ["Konto", "Anfangsstand", "Kontostand"], rows))
 
     def add(self):
         if not self.category.currentText() or not self.account.currentText():
@@ -624,8 +625,12 @@ class EntryTab(QWidget):
                     self.regular.isChecked(),
                     self.account.currentText(),
                     self.amount.value())
+        row = len(self.store.bookings)
+        self.table.setUpdatesEnabled(False)
+        self.model.beginInsertRows(QModelIndex(), row, row)
         self.store.bookings.append(b)
-        self.model.refresh()
+        self.model.endInsertRows()
+        self.table.setUpdatesEnabled(True)
         self._refresh_balances()
         self.amount.setValue(0)
         self.description.setCurrentText("")
@@ -1290,6 +1295,10 @@ class MainWindow(QMainWindow):
         self.create_menu()
         self.entry.changed.connect(self.data_changed)
         self.settings.changed.connect(self.settings_changed)
+        self.tabs.currentChanged.connect(self.on_tab_changed)
+        self._pivot_needs_refresh = False
+        self._overview_needs_refresh = False
+        self._entry_needs_refresh = False
         self.statusBar().showMessage("Bereit")
 
     def create_menu(self):
@@ -1335,15 +1344,48 @@ class MainWindow(QMainWindow):
         help_menu.addAction(modules_a)
 
     def data_changed(self):
-        self.pivot.refresh_settings()
-        self.pivot.apply()
-        self.overview.refresh()
+        idx = self.tabs.currentIndex()
+        if idx == 1:
+            self.pivot.refresh_settings()
+            self.pivot.apply()
+        else:
+            self._pivot_needs_refresh = True
+        if idx == 2:
+            self.overview.refresh()
+        else:
+            self._overview_needs_refresh = True
+        if idx == 0:
+            self.entry._refresh_balances()
+        else:
+            self._entry_needs_refresh = True
 
     def settings_changed(self):
         self.entry.refresh_settings()
         self.pivot.refresh_settings()
-        self.pivot.apply()
-        self.overview.refresh()
+        idx = self.tabs.currentIndex()
+        if idx == 1:
+            self.pivot.apply()
+        else:
+            self._pivot_needs_refresh = True
+        if idx == 2:
+            self.overview.refresh()
+        else:
+            self._overview_needs_refresh = True
+
+    def on_tab_changed(self, index):
+        if index == 0:
+            if self._entry_needs_refresh:
+                self.entry._refresh_balances()
+                self._entry_needs_refresh = False
+        elif index == 1:
+            if self._pivot_needs_refresh:
+                self.pivot.refresh_settings()
+                self.pivot.apply()
+                self._pivot_needs_refresh = False
+        elif index == 2:
+            if self._overview_needs_refresh:
+                self.overview.refresh()
+                self._overview_needs_refresh = False
 
     def new(self):
         self.store = Store()
