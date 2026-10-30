@@ -10,7 +10,7 @@ from datetime import datetime as dt_datetime
 from collections import defaultdict
 from dataclasses import dataclass, asdict
 from functools import cached_property
-from datetime import date, datetime
+from datetime import date
 from pathlib import Path
 
 from PySide6.QtCore import (QAbstractTableModel, QModelIndex, Qt, QDate,
@@ -72,7 +72,8 @@ class Booking:
     def date_parts(self):
         s = self.datum or ""
         try:
-            return (int(s[:4]), int(s[5:7]), int(s[8:10]) if len(s) >= 10 else 0)
+            return (int(s[:4]), int(s[5:7]), int(s[8:10]) if
+                    len(s) >= 10 else 0)
         except (ValueError, TypeError):
             return (0, 0, 0)
 
@@ -344,10 +345,6 @@ def format_date_german(iso_date: str) -> str:
     if len(iso_date) >= 10:
         return f"{iso_date[8:10]}.{iso_date[5:7]}.{iso_date[:4]}"
     return iso_date
-    # try:
-    #     return datetime.strptime(str(iso_date), "%Y-%m-%d").strftime(DATE_FMT)
-    # except (ValueError, TypeError):
-    #     return str(iso_date)
 
 
 class BookingSortProxy(QSortFilterProxyModel):
@@ -848,6 +845,7 @@ class SimpleTableModel(QAbstractTableModel):
             return self.headers[s]
         return None
 
+
 def set_simple_model(table, headers, rows):
     model = table.model()
     if isinstance(model, SimpleTableModel):
@@ -1194,8 +1192,9 @@ class OverviewTab(QWidget):
                      money(sum(irr_income_vals)), money(sum(irr_expense_vals)),
                      money(sum(irr_income_vals) + sum(irr_expense_vals))])
         set_simple_model(self.table,
-                         ["Monat", "Reg. Einnahmen", "Reg. Ausgaben", "Reg. Summe",
-                          "Unreg. Einnahmen", "Unreg. Ausgaben", "Unreg. Summe"],
+                         ["Monat", "Reg. Einnahmen", "Reg. Ausgaben",
+                          "Reg. Summe", "Unreg. Einnahmen", "Unreg. Ausgaben",
+                          "Unreg. Summe"],
                          rows)
 
         if not CHARTS_AVAILABLE:
@@ -1315,9 +1314,9 @@ class OverviewTab(QWidget):
 
         rows.append(["Summe aller Konten", "", money(total), ""])
         set_simple_model(self.table, ["Konto",
-                                     "Anfangsstand",
-                                     "Endstand",
-                                     "Differenz"], rows)
+                                      "Anfangsstand",
+                                      "Endstand",
+                                      "Differenz"], rows)
         self.clear_chart("Kontenübersicht")
 
     def clear_chart(self, title):
