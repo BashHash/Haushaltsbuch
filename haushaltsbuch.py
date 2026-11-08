@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import json
+import math
 import shutil
 import sqlite3
 import sys
@@ -10,7 +11,7 @@ from datetime import datetime as dt_datetime
 from collections import defaultdict
 from dataclasses import dataclass, asdict
 from functools import cached_property
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 
 from PySide6.QtCore import (QAbstractTableModel, QModelIndex, Qt, QDate,
@@ -20,9 +21,9 @@ from PySide6.QtGui import (QAction, QColor, QPainter, QPen, QIcon,
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDateEdit, QDialog, QDialogButtonBox,
     QDoubleSpinBox, QFileDialog, QFormLayout, QHBoxLayout, QHeaderView, QLabel,
-    QLineEdit, QListWidget, QMainWindow, QMessageBox, QPushButton, QSpinBox,
-    QSplitter, QStyleFactory, QTabWidget, QTableView, QTextEdit, QVBoxLayout,
-    QWidget, QAbstractItemView, QGroupBox
+    QLineEdit, QInputDialog, QListWidget, QMainWindow, QMessageBox,
+    QPushButton, QSpinBox, QSplitter, QStyleFactory, QTabWidget, QTableView,
+    QTextEdit, QVBoxLayout, QWidget, QAbstractItemView, QGroupBox
 )
 try:
     from PySide6.QtCharts import (QChart, QChartView, QLineSeries, QBarSeries,
@@ -39,6 +40,16 @@ try:
 except ImportError:
     EXCEL_AVAILABLE = False
 
+try:
+    from cryptography.fernet import Fernet
+    from cryptography.fernet import InvalidToken
+    from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+    from cryptography.hazmat.primitives import hashes
+    import base64
+    CRYPTO_AVAILABLE = True
+except ImportError:
+    CRYPTO_AVAILABLE = False
+
 VERSION = "1.2.0"
 DEVELOPER = "Andreas Windmüller\nawindi@gmx.de"
 APP_TITLE = "Haushaltsbuch - V" + VERSION
@@ -46,6 +57,21 @@ DATE_FMT = "%d.%m.%Y"
 DEFAULT_FILE = Path.home() / "haushaltsbuch.json"
 RECENT_FILES_FILE = Path.home() / ".haushaltsbuch_recent.json"
 MAX_RECENT_FILES = 3
+MAX_INPUT_LENGTH = 120
+MAX_FILE_SIZE = 50 * 1024 * 1024
+MAX_RECORDS = 1_000_000
+BASE_DIR = Path(__file__).resolve().parent
+
+
+def _fernet_from_password(password):
+    """Return a Fernet instance derived from the given password."""
+    if not CRYPTO_AVAILABLE or not password:
+        return None
+    salt = b"haushaltsbuch-aes-salt-v1"
+    kdf = PBKDF2HMAC(algorithm=hashes.SHA256(),
+                     length=32, salt=salt, iterations=300000)
+    key = base64.urlsafe_b64encode(kdf.derive(password.encode("utf-8")))
+    return Fernet(key)
 
 
 def money(value: float) -> str:
@@ -55,6 +81,102 @@ def money(value: float) -> str:
 
 def parse_bool(value) -> bool:
     return str(value).strip().lower() in {"1", "true", "ja", "yes", "y", "x"}
+
+
+def _sanitize_export_value(value):
+    """Mitigate formula injection in exported files."""
+    if isinstance(value, str) and value and value[0] in ("@", "+", "-", "="):
+        return "'" + value
+    return value
+
+
+def _validate_text(value, field):
+    if not isinstance(value, str):
+        raise ValueError(f"{field} muss ein Text sein.")
+    if len(value) > MAX_INPUT_LENGTH:
+        raise ValueError(
+            f"{field} ist zu lang (max. {MAX_INPUT_LENGTH} Zeichen).")
+    return value
+
+
+def _validate_number(value, field):
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"{field} muss eine Zahl sein.")
+    if not math.isfinite(value):
+        raise ValueError(f"{field} enthält NaN oder Infinity.")
+    return float(value)
+
+
+def _validate_date(value):
+    if not isinstance(value, str) or len(value) != 10:
+        raise ValueError("Ungültiges Datumsformat (erwartet YYYY-MM-DD).")
+    try:
+        datetime.strptime(value, "%Y-%m-%d")
+    except ValueError:
+        raise ValueError(f"Ungültiges Datum: {value!r}.")
+    return value
+
+
+def _validate_bool(value, field):
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int) and value in (0, 1):
+        return bool(value)
+    raise ValueError(f"{field} muss true/false sein.")
+
+
+def _validate_booking_data(row):
+    if not isinstance(row, dict):
+        raise ValueError("Buchung muss ein Objekt sein.")
+    required = ["id", "datum", "kategorie", "beschreibung", "paypal",
+                "regelmaessig", "konto", "betrag"]
+    for key in required:
+        if key not in row:
+            raise ValueError(f"Fehlendes Feld '{key}' in Buchung.")
+    _validate_text(row["id"], "id")
+    if not str(row["id"]).strip():
+        raise ValueError("id darf nicht leer sein.")
+    _validate_date(row["datum"])
+    _validate_text(row["kategorie"], "Kategorie")
+    if not str(row["kategorie"]).strip():
+        raise ValueError("Kategorie darf nicht leer sein.")
+    _validate_text(row["beschreibung"], "Beschreibung")
+    _validate_bool(row["paypal"], "paypal")
+    _validate_bool(row["regelmaessig"], "regelmaessig")
+    _validate_text(row["konto"], "Konto")
+    if not str(row["konto"]).strip():
+        raise ValueError("Konto darf nicht leer sein.")
+    _validate_number(row["betrag"], "Betrag")
+
+
+def _validate_settings_data(settings):
+    if not isinstance(settings, dict):
+        raise ValueError("settings muss ein Objekt sein.")
+    categories = settings.get("categories", [])
+    if not isinstance(categories, list):
+        raise ValueError("categories muss eine Liste sein.")
+    for c in categories:
+        _validate_text(c, "Kategorie")
+        if not str(c).strip():
+            raise ValueError("Kategorie darf nicht leer sein.")
+    descriptions = settings.get("descriptions", [])
+    if not isinstance(descriptions, list):
+        raise ValueError("descriptions muss eine Liste sein.")
+    for d in descriptions:
+        _validate_text(d, "Beschreibung")
+    accounts = settings.get("accounts", [])
+    if not isinstance(accounts, list):
+        raise ValueError("accounts muss eine Liste sein.")
+    for acc in accounts:
+        if not isinstance(acc, dict):
+            raise ValueError("Konto muss ein Objekt sein.")
+        if "name" not in acc:
+            raise ValueError("Fehlendes Feld 'name' in Konto.")
+        _validate_text(acc["name"], "Kontoname")
+        if not str(acc["name"]).strip():
+            raise ValueError("Kontoname darf nicht leer sein.")
+        _validate_number(acc.get("opening_balance", 0.0),
+                         "Anfangsstand")
 
 
 @dataclass
@@ -81,6 +203,7 @@ class Booking:
 class Store:
     def __init__(self):
         self.path: Path | None = None
+        self.password: str | None = None
         self.categories = ["Abhebung", "Auto",
                            "Bank", "Darlehen",
                            "Dienstleistung", "Einkaufen",
@@ -125,19 +248,53 @@ class Store:
             for old in backups[:-10]:
                 old.unlink(missing_ok=True)
 
-    def save(self, path: Path | None = None):
+    def save(self, path: Path | None = None, password=None):
         if path:
             self.path = path
         if not self.path:
             self.path = DEFAULT_FILE
+        if password is not None:
+            self.password = password
         self._create_backup()
-        self.path.write_text(json.dumps(self.to_dict(),
-                                        ensure_ascii=False,
-                                        indent=2),
-                             encoding="utf-8")
+        payload = json.dumps(self.to_dict(), ensure_ascii=False, indent=2)
+        f = _fernet_from_password(self.password)
+        if f is not None:
+            self.path.write_bytes(f.encrypt(payload.encode("utf-8")))
+        else:
+            self.path.write_text(payload, encoding="utf-8")
 
-    def load(self, path: Path):
-        raw = json.loads(path.read_text(encoding="utf-8"))
+    def load(self, path: Path, password=None):
+        if path.stat().st_size > MAX_FILE_SIZE:
+            raise ValueError("Datei ist zu groß (max. 50 MB).")
+        data = path.read_bytes()
+        text = None
+        decrypted = False
+        f = _fernet_from_password(password)
+        if f is not None:
+            try:
+                text = f.decrypt(data).decode("utf-8")
+                decrypted = True
+            except InvalidToken:
+                raise ValueError("Falsches Passwort.")
+            except Exception:
+                # Fallback for legacy unencrypted files
+                text = data.decode("utf-8")
+        else:
+            text = data.decode("utf-8")
+        raw = json.loads(text)
+        self.password = password if decrypted else None
+        if not isinstance(raw, dict):
+            raise ValueError("JSON-Wurzel muss ein Objekt sein.")
+        settings = raw.get("settings", {})
+        _validate_settings_data(settings)
+        bookings_raw = raw.get("bookings", [])
+        if not isinstance(bookings_raw, list):
+            raise ValueError("bookings muss eine Liste sein.")
+        if len(bookings_raw) > MAX_RECORDS:
+            raise ValueError("Maximale Datensatzanzahl (1.000.000) erreicht.")
+        for row in bookings_raw:
+            _validate_booking_data(row)
+        # Load
         settings = raw.get("settings", {})
         self.categories = list(settings.get("categories", []))
         self.descriptions = list(settings.get("descriptions", []))
@@ -147,74 +304,138 @@ class Store:
 
     # --- SQLite support ---
 
-    def save_sqlite(self, path: Path):
-        """Save all data to a SQLite database."""
-        conn = sqlite3.connect(str(path))
-        cur = conn.cursor()
-        cur.executescript("""
-            CREATE TABLE IF NOT EXISTS settings (
-                key TEXT PRIMARY KEY,
-                value TEXT
-            );
-            CREATE TABLE IF NOT EXISTS accounts (
-                name TEXT PRIMARY KEY,
-                opening_balance REAL
-            );
-            CREATE TABLE IF NOT EXISTS bookings (
-                id TEXT PRIMARY KEY,
-                datum TEXT,
-                kategorie TEXT,
-                beschreibung TEXT,
-                paypal INTEGER,
-                regelmaessig INTEGER,
-                konto TEXT,
-                betrag REAL
-            );
-        """)
-        # Clear existing data
-        cur.execute("DELETE FROM settings")
-        cur.execute("DELETE FROM accounts")
-        cur.execute("DELETE FROM bookings")
-        # Save settings
-        cur.execute("INSERT INTO settings VALUES (?, ?)",
-                    ("categories", json.dumps(self.categories)))
-        cur.execute("INSERT INTO settings VALUES (?, ?)",
-                    ("descriptions", json.dumps(self.descriptions)))
-        # Save accounts
-        for a in self.accounts:
-            cur.execute("INSERT INTO accounts VALUES (?, ?)",
-                        (a["name"], a.get("opening_balance", 0.0)))
-        # Save bookings
-        for b in self.bookings:
-            cur.execute("""INSERT INTO bookings VALUES (?,?,?,?,?,?,?,?)""",
-                        (b.id, b.datum, b.kategorie, b.beschreibung,
-                         int(b.paypal), int(b.regelmaessig),
-                         b.konto, b.betrag))
-        conn.commit()
-        conn.close()
-        self.path = path
+    def save_sqlite(self, path: Path, password=None):
+        """Save all data to a SQLite database
+(optionally SQLCipher-encrypted)."""
+        if password is not None:
+            self.password = password
+        if self.password:
+            try:
+                import sqlcipher3
+            except ImportError:
+                raise RuntimeError("sqlcipher3 ist nicht installiert.")
+            conn = sqlcipher3.connect(str(path))
+            escaped = self.password.replace("'", "''")
+            conn.execute(f"PRAGMA key='{escaped}'")
+        else:
+            conn = sqlite3.connect(str(path))
+        with conn:
+            cur = conn.cursor()
+            cur.executescript("""
+                CREATE TABLE IF NOT EXISTS settings (
+                    key TEXT PRIMARY KEY,
+                    value TEXT
+                );
+                CREATE TABLE IF NOT EXISTS accounts (
+                    name TEXT PRIMARY KEY,
+                    opening_balance REAL
+                );
+                CREATE TABLE IF NOT EXISTS bookings (
+                    id TEXT PRIMARY KEY,
+                    datum TEXT,
+                    kategorie TEXT,
+                    beschreibung TEXT,
+                    paypal INTEGER,
+                    regelmaessig INTEGER,
+                    konto TEXT,
+                    betrag REAL
+                );
+            """)
+            # Clear existing data
+            cur.execute("DELETE FROM settings")
+            cur.execute("DELETE FROM accounts")
+            cur.execute("DELETE FROM bookings")
+            # Save settings
+            cur.execute("INSERT INTO settings VALUES (?, ?)",
+                        ("categories", json.dumps(self.categories)))
+            cur.execute("INSERT INTO settings VALUES (?, ?)",
+                        ("descriptions", json.dumps(self.descriptions)))
+            # Save accounts
+            for a in self.accounts:
+                cur.execute("INSERT INTO accounts VALUES (?, ?)",
+                            (a["name"], a.get("opening_balance", 0.0)))
+            # Save bookings
+            for b in self.bookings:
+                cur.execute("""INSERT INTO bookings
+VALUES (?,?,?,?,?,?,?,?)""",
+                            (b.id, b.datum, b.kategorie, b.beschreibung,
+                             int(b.paypal), int(b.regelmaessig),
+                             b.konto, b.betrag))
+            conn.commit()
+            # conn.close()
+            self.path = path
 
-    def load_sqlite(self, path: Path):
+    def load_sqlite(self, path: Path, password=None):
         """Load all data from a SQLite database."""
-        conn = sqlite3.connect(str(path))
+        if path.stat().st_size > MAX_FILE_SIZE:
+            raise ValueError("Datei ist zu groß (max. 50 MB).")
+        if password:
+            try:
+                import sqlcipher3
+            except ImportError:
+                raise RuntimeError("sqlcipher3 ist nicht installiert.")
+            conn = sqlcipher3.connect(str(path))
+            escaped = password.replace("'", "''")
+            conn.execute(f"PRAGMA key='{escaped}'")
+        else:
+            conn = sqlite3.connect(str(path))
         cur = conn.cursor()
         # Load settings
         cur.execute("SELECT key, value FROM settings")
         settings = dict(cur.fetchall())
-        self.categories = json.loads(settings.get("categories", "[]"))
-        self.descriptions = json.loads(settings.get("descriptions", "[]"))
+        categories = json.loads(settings.get("categories", "[]"))
+        descriptions = json.loads(settings.get("descriptions", "[]"))
+        _validate_settings_data({
+            "categories": categories,
+            "descriptions": descriptions,
+            "accounts": [],
+        })
         # Load accounts
         cur.execute("SELECT name, opening_balance FROM accounts")
-        self.accounts = [{"name": r[0],
-                          "opening_balance": r[1]} for r in cur.fetchall()]
+        accounts_raw = cur.fetchall()
+        accounts = []
+        for name, bal in accounts_raw:
+            _validate_text(name, "Kontoname")
+            if not str(name).strip():
+                raise ValueError("Kontoname darf nicht leer sein.")
+            _validate_number(bal, "Anfangsstand")
+            accounts.append({"name": name, "opening_balance": bal})
+        _validate_settings_data({
+            "categories": categories,
+            "descriptions": descriptions,
+            "accounts": accounts,
+        })
         # Load bookings
         cur.execute("""SELECT id, datum, kategorie, beschreibung, paypal,
                               regelmaessig, konto, betrag FROM bookings""")
-        self.bookings = [Booking(id=r[0], datum=r[1], kategorie=r[2],
-                                 beschreibung=r[3], paypal=bool(r[4]),
-                                 regelmaessig=bool(r[5]), konto=r[6],
-                                 betrag=r[7]) for r in cur.fetchall()]
+        rows = cur.fetchall()
+        if len(rows) > MAX_RECORDS:
+            conn.close()
+            raise ValueError("Maximale Datensatzanzahl (1.000.000) erreicht.")
+        bookings_data = []
+        for r in rows:
+            row = {
+                "id": r[0], "datum": r[1], "kategorie": r[2],
+                "beschreibung": r[3], "paypal": bool(r[4]),
+                "regelmaessig": bool(r[5]), "konto": r[6],
+                "betrag": r[7],
+            }
+            _validate_booking_data(row)
+            bookings_data.append(row)
         conn.close()
+
+        self.categories = list(categories)
+        self.descriptions = list(descriptions)
+        self.accounts = accounts
+        self.bookings = [Booking(id=d["id"], datum=d["datum"],
+                                 kategorie=d["kategorie"],
+                                 beschreibung=d["beschreibung"],
+                                 paypal=d["paypal"],
+                                 regelmaessig=d["regelmaessig"],
+                                 konto=d["konto"],
+                                 betrag=d["betrag"])
+                         for d in bookings_data]
+        self.password = password if password else None
         self.path = path
 
     # --- Excel export ---
@@ -235,11 +456,12 @@ class Store:
             cell.font = Font(bold=True)
             cell.fill = PatternFill("solid", fgColor="D9E2F3")
         for b in self.bookings:
-            ws.append([format_date_german(b.datum), b.kategorie,
-                       b.beschreibung,
+            ws.append([format_date_german(b.datum),
+                       _sanitize_export_value(b.kategorie),
+                       _sanitize_export_value(b.beschreibung),
                        "Ja" if b.paypal else "Nein",
                        "Ja" if b.regelmaessig else "Nein",
-                       b.konto, b.betrag])
+                       _sanitize_export_value(b.konto), b.betrag])
         # Format amount column
         for row in ws.iter_rows(min_row=2, min_col=7, max_col=7):
             for cell in row:
@@ -254,7 +476,8 @@ class Store:
             cell.font = Font(bold=True)
             cell.fill = PatternFill("solid", fgColor="D9E2F3")
         for a in self.accounts:
-            ws2.append([a["name"], a.get("opening_balance", 0.0)])
+            ws2.append([_sanitize_export_value(a["name"]),
+                        a.get("opening_balance", 0.0)])
         for row in ws2.iter_rows(min_row=2, min_col=2, max_col=2):
             for cell in row:
                 cell.number_format = '#,##0.00 €'
@@ -424,7 +647,11 @@ class BookingDialog(QDialog):
         self.category.addItems(store.categories)
         self.description = QComboBox()
         self.description.setEditable(True)
+        if self.description.lineEdit() is not None:
+            self.description.lineEdit().setMaxLength(MAX_INPUT_LENGTH)
         self.description.addItems(store.descriptions)
+        if self.description.lineEdit() is not None:
+            self.description.lineEdit().setMaxLength(MAX_INPUT_LENGTH)
         self.paypal = QCheckBox("Ja")
         self.regular = QCheckBox("Ja")
         self.account = QComboBox()
@@ -484,6 +711,8 @@ class EntryTab(QWidget):
         self.category = QComboBox()
         self.description = QComboBox()
         self.description.setEditable(True)
+        if self.description.lineEdit() is not None:
+            self.description.lineEdit().setMaxLength(MAX_INPUT_LENGTH)
         self.paypal = QCheckBox("PayPal")
         self.regular = QCheckBox("Regelmäßig")
         self.account = QComboBox()
@@ -645,6 +874,11 @@ class EntryTab(QWidget):
     def add(self):
         if not self.category.currentText() or not self.account.currentText():
             return
+        if len(self.store.bookings) >= MAX_RECORDS:
+            QMessageBox.warning(self, "Limit",
+                                "Maximale Datensatzanzahl "
+                                "(1.000.000) erreicht.")
+            return
         b = Booking(str(uuid.uuid4()),
                     self.date.date().toString("yyyy-MM-dd"),
                     self.category.currentText(),
@@ -723,6 +957,7 @@ class PivotTab(QWidget):
         self.category = QComboBox()
         self.account = QComboBox()
         self.description = QLineEdit()
+        self.description.setMaxLength(MAX_INPUT_LENGTH)
         self.description.setPlaceholderText("enthält …")
         self.month.addItem("Alle Monate", 0)
 
@@ -950,6 +1185,7 @@ class ListEditor(QGroupBox):
         f = QFormLayout(dlg)
         name = QLineEdit(current.get("name", "")
                          if self.accounts and current else (current or ""))
+        name.setMaxLength(MAX_INPUT_LENGTH)
         f.addRow("Name", name)
 
         balance = QDoubleSpinBox()
@@ -1384,6 +1620,10 @@ class MainWindow(QMainWindow):
         excel_export.triggered.connect(self.export_excel)
         m.addAction(excel_export)
         m.addSeparator()
+        change_pw = QAction("Passwort ändern…", self)
+        change_pw.triggered.connect(self.change_password)
+        m.addAction(change_pw)
+        m.addSeparator()
         quit_a = QAction("Beenden", self)
         quit_a.triggered.connect(self.close)
         m.addAction(quit_a)
@@ -1461,19 +1701,41 @@ class MainWindow(QMainWindow):
     def open_json(self):
         p, _ = QFileDialog.getOpenFileName(self, "JSON laden", "",
                                            "JSON (*.json)")
-        if p:
+        if not p:
+            return
+        if Path(p).stat().st_size > MAX_FILE_SIZE:
+            QMessageBox.critical(self, "Fehler",
+                                 "Datei ist zu groß (max. 50 MB).")
+            return
+        while True:
+            pw, ok = QInputDialog.getText(
+                self, "Passwort", "Passwort zum Öffnen:", QLineEdit.Password)
+            if not ok:
+                return
             try:
-                self.store.load(Path(p))
+                self.store.load(Path(p), pw)
                 self.rebind()
                 self.statusBar().showMessage(f"Geladen: {p}")
+                return
             except Exception as e:
-                QMessageBox.critical(self, "Fehler", str(e))
+                if QMessageBox.question(
+                        self, "Fehler",
+                        f"{e}\nErneut versuchen?") != QMessageBox.Yes:
+                    return
 
     def save(self):
         if not self.store.path:
             return self.save_as()
+        if self.store.password is None:
+            pw, ok = QInputDialog.getText(
+                self, "Passwort",
+                "Passwort zum Verschlüsseln festlegen:",
+                QLineEdit.Password)
+            if not ok or not pw:
+                return
+            self.store.password = pw
         try:
-            self.store.save()
+            self.store.save(password=self.store.password)
             self.statusBar().showMessage(f"Gespeichert: {self.store.path}")
         except Exception as e:
             QMessageBox.critical(self, "Fehler", str(e))
@@ -1484,14 +1746,60 @@ class MainWindow(QMainWindow):
                                            str(self.store.path or
                                                DEFAULT_FILE),
                                            "JSON (*.json)")
-        if p:
-            if not p.lower().endswith('.json'):
-                p += '.json'
+        if not p:
+            return
+        if not p.lower().endswith('.json'):
+            p += '.json'
+        if self.store.password is None:
+            pw, ok = QInputDialog.getText(
+                self, "Passwort",
+                "Passwort zum Verschlüsseln festlegen:",
+                QLineEdit.Password)
+            if not ok or not pw:
+                return
+            self.store.password = pw
+        try:
+            self.store.save(Path(p), password=self.store.password)
+            self.statusBar().showMessage(f"Gespeichert: {p}")
+        except Exception as e:
+            QMessageBox.critical(self, "Fehler", str(e))
+
+    def change_password(self):
+        if self.store.password is not None:
+            old, ok = QInputDialog.getText(
+                self, "Passwort ändern", "Altes Passwort:",
+                QLineEdit.Password)
+            if not ok:
+                return
+            if old != self.store.password:
+                QMessageBox.critical(self, "Fehler",
+                                     "Altes Passwort ist falsch.")
+                return
+        new1, ok = QInputDialog.getText(
+            self, "Passwort ändern", "Neues Passwort:",
+            QLineEdit.Password)
+        if not ok or not new1:
+            return
+        new2, ok = QInputDialog.getText(
+            self, "Passwort ändern", "Neues Passwort wiederholen:",
+            QLineEdit.Password)
+        if not ok:
+            return
+        if new1 != new2:
+            QMessageBox.critical(self, "Fehler",
+                                 "Die neuen Passwörter stimmen nicht überein.")
+            return
+        self.store.password = new1
+        if self.store.path:
             try:
-                self.store.save(Path(p))
-                self.statusBar().showMessage(f"Gespeichert: {p}")
+                self.store.save(password=new1)
+                self.statusBar().showMessage(
+                    "Passwort geändert und Datei gespeichert.")
             except Exception as e:
                 QMessageBox.critical(self, "Fehler", str(e))
+        else:
+            self.statusBar().showMessage(
+                "Passwort geändert (wird beim nächsten Speichern verwendet).")
 
     def import_delimited(self):
         p, _ = QFileDialog.getOpenFileName(self,
@@ -1500,27 +1808,39 @@ class MainWindow(QMainWindow):
                                            "CSV/TXT (*.csv *.txt)")
         if not p:
             return
+        if Path(p).stat().st_size > MAX_FILE_SIZE:
+            QMessageBox.critical(self, "Fehler",
+                                 "Datei ist zu groß (max. 50 MB).")
+            return
         try:
             sample = Path(p).read_text(encoding="utf-8-sig")[:4096]
             dialect = csv.Sniffer().sniff(sample, delimiters=";,\t|")
             with open(p, encoding="utf-8-sig", newline="") as f:
                 for r in csv.DictReader(f, dialect=dialect):
-                    self.store.bookings.append(Booking(r.get("id") or
-                                                       str(uuid.uuid4()),
-                                                       r["Datum"],
-                                                       r["Kategorie"],
-                                                       r.get("Beschreibung",
-                                                             ""),
-                                                       parse_bool(
-                                                           r.get("PayPal",
-                                                                 False)),
-                                                       parse_bool(r.get(
-                                                           "Regelmäßig",
-                                                           False)),
-                                                       r["Konto"],
-                                                       float(r["Betrag"]
-                                                             .replace(",",
-                                                                      "."))))
+                    booking_data = {
+                        "id": r.get("id") or str(uuid.uuid4()),
+                        "datum": r["Datum"],
+                        "kategorie": r["Kategorie"],
+                        "beschreibung": r.get("Beschreibung", ""),
+                        "paypal": parse_bool(r.get("PayPal", False)),
+                        "regelmaessig": parse_bool(
+                            r.get("Regelmäßig", False)),
+                        "konto": r["Konto"],
+                        "betrag": float(r["Betrag"].replace(",", ".")),
+                    }
+                    _validate_booking_data(booking_data)
+                    if len(self.store.bookings) >= MAX_RECORDS:
+                        raise ValueError(
+                            "Maximale Datensatzanzahl (1.000.000) erreicht.")
+                    self.store.bookings.append(Booking(
+                        booking_data["id"],
+                        booking_data["datum"],
+                        booking_data["kategorie"],
+                        booking_data["beschreibung"],
+                        booking_data["paypal"],
+                        booking_data["regelmaessig"],
+                        booking_data["konto"],
+                        booking_data["betrag"]))
             self.model.refresh()
             self.data_changed()
         except Exception as e:
@@ -1544,13 +1864,13 @@ class MainWindow(QMainWindow):
                 w.writerow(["id", "Datum", "Kategorie", "Beschreibung",
                             "PayPal", "Regelmäßig", "Konto", "Betrag"])
                 for b in self.store.bookings:
-                    w.writerow([b.id,
+                    w.writerow([_sanitize_export_value(b.id),
                                 b.datum,
-                                b.kategorie,
-                                b.beschreibung,
+                                _sanitize_export_value(b.kategorie),
+                                _sanitize_export_value(b.beschreibung),
                                 "Ja" if b.paypal else "Nein",
                                 "Ja" if b.regelmaessig else "Nein",
-                                b.konto,
+                                _sanitize_export_value(b.konto),
                                 str(b.betrag).replace('.', ',')])
             self.statusBar().showMessage(f"Exportiert: {p}")
         except Exception as e:
@@ -1559,27 +1879,50 @@ class MainWindow(QMainWindow):
     def open_sqlite(self):
         p, _ = QFileDialog.getOpenFileName(self, "SQLite laden", "",
                                            "SQLite (*.db *.sqlite *.sqlite3)")
-        if p:
-            try:
-                self.store.load_sqlite(Path(p))
-                self.rebind()
-                self.statusBar().showMessage(f"Geladen: {p}")
-            except Exception as e:
-                QMessageBox.critical(self, "Fehler", str(e))
+        if not p:
+            return
+        if Path(p).stat().st_size > MAX_FILE_SIZE:
+            QMessageBox.critical(self, "Fehler",
+                                 "Datei ist zu groß (max. 50 MB).")
+            return
+        pw = None
+        # Ask for password (optional)
+        text, ok = QInputDialog.getText(
+            self, "Passwort", "Passwort (leer lassen für unverschlüsselt):",
+            QLineEdit.Password)
+        if ok and text:
+            pw = text
+        try:
+            self.store.load_sqlite(Path(p), pw)
+            self.rebind()
+            self.statusBar().showMessage(f"Geladen: {p}")
+        except Exception as e:
+            QMessageBox.critical(self, "Fehler", str(e))
 
     def save_sqlite(self):
         p, _ = QFileDialog.getSaveFileName(self, "SQLite speichern",
                                            str(self.store.path or
                                                "haushaltsbuch.db"),
                                            "SQLite (*.db *.sqlite *.sqlite3)")
-        if p:
-            if not p.lower().endswith(('.db', '.sqlite', '.sqlite3')):
-                p += '.db'
-            try:
-                self.store.save_sqlite(Path(p))
-                self.statusBar().showMessage(f"Gespeichert: {p}")
-            except Exception as e:
-                QMessageBox.critical(self, "Fehler", str(e))
+        if not p:
+            return
+        if not p.lower().endswith(('.db', '.sqlite', '.sqlite3')):
+            p += '.db'
+        if self.store.password is None:
+            pw, ok = QInputDialog.getText(
+                self, "Passwort",
+                "Passwort zum Verschlüsseln\
+                (leer lassen für unverschlüsselt):",
+                QLineEdit.Password)
+            if not ok:
+                return
+            if pw:
+                self.store.password = pw
+        try:
+            self.store.save_sqlite(Path(p), password=self.store.password)
+            self.statusBar().showMessage(f"Gespeichert: {p}")
+        except Exception as e:
+            QMessageBox.critical(self, "Fehler", str(e))
 
     def export_excel(self):
         if not EXCEL_AVAILABLE:
@@ -1665,8 +2008,7 @@ def main():
     app = QApplication(sys.argv)
     app.setApplicationName(APP_TITLE)
     app.setStyle(QStyleFactory.create("Fusion"))
-    app.setWindowIcon(QIcon(
-        "C:/Users/awind/OneDrive/Dokumente/GitHub/Haushaltsbuch/icons/icon.svg"))
+    app.setWindowIcon(QIcon(str(BASE_DIR / "icons" / "icon.svg")))
     QGuiApplication.styleHints().setColorScheme(Qt.ColorScheme.Light)
     w = MainWindow()
     w.show()
